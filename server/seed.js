@@ -1,5 +1,10 @@
 import bcrypt from 'bcryptjs';
 import { db } from './db.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { refreshTrust, computeOwnerTrust } from './utils/trust.js';
 
 const hash = bcrypt.hashSync('Demo@123', 10);
 const addUser = db.prepare('INSERT OR IGNORE INTO users (name,email,password,role,phone,avatar) VALUES (?,?,?,?,?,?)');
@@ -35,14 +40,52 @@ if (existing < 60) {
   categories.forEach((category,ci)=>category.list.forEach((item,vi)=> {
    const [name,brand,seats,price]=item; const loc=locations[(ci*3+vi)%locations.length];
    const photo=`https://images.unsplash.com/${photos[category.name][vi]}?auto=format&fit=crop&w=1200&q=85`;
-   insertVehicle.run(3+((ci*2+vi)%10),name,category.name,brand,2021+(vi%5),price+((vi%3)*5),loc[0],loc[1]+((vi%3)*.003),loc[2]+((ci%3)*.002),`A well maintained ${name}, ready for your next Hyderabad adventure. Clean, reliable and available for flexible hourly rentals.`,photo,JSON.stringify([photo,photo]),seats,ci<2?'Automatic':'Manual',ci===4||ci===3?'Electric':'Petrol');
+   insertVehicle.run(2+((ci*2+vi)%11),name,category.name,brand,2021+(vi%5),price+((vi%3)*5),loc[0],loc[1]+((vi%3)*.003),loc[2]+((ci%3)*.002),`A well maintained ${name}, ready for your next Hyderabad adventure. Clean, reliable and available for flexible hourly rentals.`,photo,JSON.stringify([photo,photo]),seats,ci<2?'Automatic':'Manual',ci===4||ci===3?'Electric':'Petrol');
   }));
  }); transaction();
 }
 const renter=db.prepare("SELECT id FROM users WHERE email='renter@demo.com'").get().id;
+// Extra historical demo renters and verified profile metadata.
+const extraRenters=[['Rahul Verma','renter1@demo.com'],['Divya Menon','renter2@demo.com'],['Faisal Ali','renter3@demo.com'],['Pooja Iyer','renter4@demo.com'],['Naveen Reddy','renter5@demo.com']];
+extraRenters.forEach(([name,email])=>addUser.run(name,email,hash,'renter','',`https://i.pravatar.cc/120?img=${18+extraRenters.findIndex(x=>x[1]===email)}`));
+const setDemo=db.prepare("UPDATE users SET is_demo=CASE WHEN email LIKE '%@demo.com' OR email LIKE '%@rentride.demo' THEN 1 ELSE 0 END");setDemo.run();extraRenters.forEach(([_,email])=>db.prepare('UPDATE users SET is_demo=0 WHERE email=?').run(email));
+db.prepare("UPDATE users SET phone='9876500001',phone_verified=1,license_no='TS09 20190012345' WHERE email='renter@demo.com'").run();
+db.prepare("UPDATE users SET phone='9876500002',phone_verified=1 WHERE email='owner@demo.com'").run();
+db.prepare("UPDATE users SET phone_verified=1 WHERE role='owner' AND id%4<>0").run();
+db.prepare("UPDATE vehicles SET registration_no='TS09RR'||printf('%06d',id) WHERE registration_no IS NULL").run();
+// Ensure the primary demo owner has one vehicle in every category for the walkthrough.
+const primaryOwner=db.prepare("SELECT id FROM users WHERE email='owner@demo.com'").get().id;
+for(const category of ['Cars','SUVs','Bikes','Scooters','Bicycles','Vans and Cargo'])if(!db.prepare('SELECT id FROM vehicles WHERE owner_id=? AND category=?').get(primaryOwner,category)){const src=db.prepare('SELECT * FROM vehicles WHERE category=? LIMIT 1').get(category);db.prepare('INSERT INTO vehicles(owner_id,name,category,brand,model_year,price,location,lat,lng,description,image,images,seats,transmission,fuel,available,registration_no,rating) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(primaryOwner,`Demo ${src.name}`,src.category,src.brand,src.model_year,src.price,src.location,src.lat,src.lng,src.description,src.image,src.images,src.seats,src.transmission,src.fuel,1,`TS09RR${String(100000+src.id).slice(-6)}`,4.7)}
 const vehicle=db.prepare('SELECT id,price FROM vehicles ORDER BY id LIMIT 1').get();
 if (!db.prepare('SELECT id FROM bookings LIMIT 1').get()) {
  const date=new Date(Date.now()+86400000).toISOString();
  db.prepare('INSERT INTO bookings(vehicle_id,renter_id,start_at,hours,total,status) VALUES(?,?,?,?,?,?)').run(vehicle.id,renter,date,3,vehicle.price*3,'pending');
 }
-console.log('Seed complete: 12 demo users, 60 Hyderabad vehicles, sample booking.');
+// One repeatable set of historical activity for trust tiers.
+if (!db.prepare("SELECT id FROM bookings WHERE status='completed' LIMIT 1").get()) {
+ const renters=[renter,...extraRenters.map(([_,email])=>db.prepare('SELECT id FROM users WHERE email=?').get(email).id)];
+ const owners=db.prepare("SELECT id FROM users WHERE role='owner'").all();
+ const statuses=[['completed',14,1,0],['completed',11,2,1],['completed',8,2,1],['completed',6,3,1],['completed',9,1,0],['completed',5,3,2],['completed',3,4,1],['completed',12,1,1],['completed',7,2,0],['completed',2,5,2],['completed',4,1,0]];
+ owners.forEach((o,index)=>{const counts=statuses[index]||statuses[10],vs=db.prepare('SELECT id,price FROM vehicles WHERE owner_id=?').all(o.id);if(!vs.length)return;for(let i=0;i<counts[1]+counts[2]+counts[3];i++){const status=i<counts[1]?'completed':i<counts[1]+counts[2]?'rejected':'cancelled',v=vs[i%vs.length],start=new Date(Date.UTC(2026,8,1+(i*3)%55,10)).toISOString();db.prepare('INSERT INTO bookings(vehicle_id,renter_id,start_at,hours,total,status,rate_per_hour,list_price_per_hour,handover_state) VALUES(?,?,?,?,?,?,?,?,?)').run(v.id,renters[(i+index)%renters.length],start,2+i%7,v.price*(2+i%7),status,v.price,v.price,status==='completed'?'returned':'none');if(status==='completed')db.prepare('INSERT INTO reviews(vehicle_id,renter_id,stars,comment) VALUES(?,?,?,?)').run(v.id,renters[(i+index)%renters.length],index%4===0?5:4,'Great ride and easy pickup.')}})
+}
+const base=path.dirname(fileURLToPath(import.meta.url));
+const explicitSeedRun=process.argv[1]?.endsWith('/server/seed.js');
+const liveSample=explicitSeedRun?db.prepare("SELECT b.id FROM bookings b JOIN vehicles v ON v.id=b.vehicle_id WHERE v.owner_id=? AND b.renter_id=? AND v.category='Scooters' AND b.start_at>datetime('now') ORDER BY b.id LIMIT 1").get(primaryOwner,renter):null;if(liveSample){db.prepare('DELETE FROM handover_checks WHERE booking_id=?').run(liveSample.id);fs.rmSync(path.join(base,'..','public','uploads','handover',String(liveSample.id)),{recursive:true,force:true});db.prepare("UPDATE bookings SET status='accepted',handover_state='pickup_pending' WHERE id=?").run(liveSample.id)}
+// Rebuild the primary demo storyline once: live pickup, completed report, pending request.
+if(!db.prepare("SELECT b.id FROM bookings b JOIN vehicles v ON v.id=b.vehicle_id WHERE v.owner_id=? AND b.status='completed' AND b.offer_id IS NOT NULL LIMIT 1").get(primaryOwner)){
+ const renterIds=[renter,...extraRenters.map(([_,email])=>db.prepare('SELECT id FROM users WHERE email=?').get(email).id)],scooter=db.prepare("SELECT id,price FROM vehicles WHERE owner_id=? AND category='Scooters' LIMIT 1").get(primaryOwner),car=db.prepare("SELECT id,price,name FROM vehicles WHERE owner_id=? AND category='Cars' LIMIT 1").get(primaryOwner),suv=db.prepare("SELECT id,price FROM vehicles WHERE owner_id=? AND category='SUVs' LIMIT 1").get(primaryOwner);
+ const tomorrow=new Date();tomorrow.setDate(tomorrow.getDate()+1);tomorrow.setHours(10,0,0,0);const twoDays=new Date(Date.now()-2*86400000).toISOString();
+ const liveId=Number(db.prepare('INSERT INTO bookings(vehicle_id,renter_id,start_at,hours,total,status,rate_per_hour,list_price_per_hour,handover_state) VALUES(?,?,?,?,?,?,?,?,?)').run(scooter.id,renter, tomorrow.toISOString(),3,scooter.price*3,'accepted',scooter.price,scooter.price,'pickup_pending').lastInsertRowid);
+ const convoId=Number(db.prepare('INSERT INTO conversations(vehicle_id,renter_id,owner_id) VALUES(?,?,?)').run(car.id,renter,primaryOwner).lastInsertRowid),p1=Math.max(5,Math.round(car.price*.8/5)*5),p2=Math.max(p1+1,Math.round(car.price*.9/5)*5),exp=new Date(Date.now()+86400000).toISOString().replace('T',' ').slice(0,19);
+ const offer1=Number(db.prepare("INSERT INTO offers(conversation_id,vehicle_id,renter_id,owner_id,created_by,price_per_hour,list_price_per_hour,hours,status,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)").run(convoId,car.id,renter,primaryOwner,renter,p1,car.price,4,'countered',exp).lastInsertRowid);
+ const offer2=Number(db.prepare("INSERT INTO offers(conversation_id,vehicle_id,renter_id,owner_id,created_by,price_per_hour,list_price_per_hour,hours,status,parent_offer_id,expires_at,responded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,datetime('now'))").run(convoId,car.id,renter,primaryOwner,primaryOwner,p2,car.price,4,'used',offer1,exp).lastInsertRowid);
+ [['offer',renter,'Offer: ₹'+p1+'/hr',offer1],['offer',primaryOwner,'Offer: ₹'+p2+'/hr',offer2],['system',renter,'Renter accepted the offer of ₹'+p2+'/hr',null]].forEach(([kind,sender,body,oid])=>db.prepare('INSERT INTO messages(vehicle_id,sender_id,recipient_id,body,kind,offer_id) VALUES(?,?,?,?,?,?)').run(car.id,sender,sender===renter?primaryOwner:renter,body,kind,oid));
+ const completedId=Number(db.prepare('INSERT INTO bookings(vehicle_id,renter_id,start_at,hours,total,status,rate_per_hour,list_price_per_hour,offer_id,handover_state) VALUES(?,?,?,?,?,?,?,?,?,?)').run(car.id,renter,twoDays,4,p2*4,'completed',p2,car.price,offer2,'returned').lastInsertRowid);
+ const folder=path.join(base,'..','public','uploads','handover',String(completedId));fs.mkdirSync(folder,{recursive:true});
+ for(const [stage,odo,level,damage] of [['pickup',41250,80,''],['return',41268,55,'Small scuff on rear bumper, left side, about 3 cm']]){const checkId=Number(db.prepare("INSERT INTO handover_checks(booking_id,stage,recorded_by,odometer_km,level_percent,checklist,notes,damage_notes,status,responded_by,response_note,responded_at) VALUES(?,?,?,?,?,?,?,?, 'confirmed',?,?,datetime('now'))").run(completedId,stage,primaryOwner,odo,level,JSON.stringify({documents_checked:true,keys_handed:true,body_condition_ok:!damage,tyres_ok:true,lights_ok:true,brakes_ok:true,interior_clean:true,spare_wheel_and_tools:true}),stage==='pickup'?'Clean car, full documents seen':'',damage,renter,damage?'Agreed, will pay for touch-up':'Confirmed').lastInsertRowid);for(const label of ['front','back','left','right']){const name=`${label}-${stage}.svg`,svg=`<svg xmlns="http://www.w3.org/2000/svg" width="800" height="500"><defs><linearGradient id="g"><stop stop-color="#4338ca"/><stop offset="1" stop-color="#f59e0b"/></linearGradient></defs><rect width="800" height="500" fill="url(#g)"/><text x="40" y="240" fill="white" font-size="48">${label.toUpperCase()} - ${stage.toUpperCase()}</text><text x="40" y="300" fill="white" font-size="32">${car.name.replace(/[&<>]/g,'')}</text></svg>`;fs.writeFileSync(path.join(folder,name),svg);const url=`/uploads/handover/${completedId}/${name}`,sha=crypto.createHash('sha256').update(svg).digest('hex');db.prepare('INSERT INTO handover_photos(check_id,uploaded_by,label,url,sha256) VALUES(?,?,?,?,?)').run(checkId,primaryOwner,label,url,sha)}}
+ db.prepare('INSERT INTO bookings(vehicle_id,renter_id,start_at,hours,total,status,rate_per_hour,list_price_per_hour,handover_state) VALUES(?,?,?,?,?,?,?,?,?)').run(suv.id,renterIds[1],new Date(Date.now()+3*86400000).toISOString(),3,suv.price*3,'pending',suv.price,suv.price,'none');
+}
+
+db.prepare("SELECT id FROM users WHERE role='owner'").all().forEach(({id})=>refreshTrust(db,id));
+console.table(db.prepare("SELECT id,name,avg_reply_minutes FROM users WHERE role='owner' ORDER BY id").all().map(u=>{const t=computeOwnerTrust(db,u.id);return {owner:u.name,score:t.score,tier:t.tier,verified:t.verified,avg_reply_minutes:t.avg_reply_minutes}}));
+console.log('Seed complete: demo renters, vehicles, historical bookings and trust scores.');

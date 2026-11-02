@@ -1,0 +1,1 @@
+export function hasOverlap(db,vehicleId,startISO,hours,excludeBookingId=0){const s=Date.parse(startISO),e=s+hours*3600000;const rows=db.prepare("SELECT id,start_at start_time,hours FROM bookings WHERE vehicle_id=? AND status='accepted' AND id!=?").all(vehicleId,excludeBookingId);return rows.some(r=>{const bs=Date.parse(r.start_time);return s<bs+r.hours*3600000&&bs<e});}

@@ -1,0 +1,1 @@
+export function distanceKm(aLat,aLng,bLat,bLng){const r=6371,p=Math.PI/180,dLat=(bLat-aLat)*p,dLng=(bLng-aLng)*p,x=Math.sin(dLat/2)**2+Math.cos(aLat*p)*Math.cos(bLat*p)*Math.sin(dLng/2)**2;return 2*r*Math.asin(Math.sqrt(x));}

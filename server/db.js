@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { migrate } from './migrate.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 fs.mkdirSync(path.join(root, '..', 'data'), { recursive: true });
@@ -16,3 +17,4 @@ CREATE TABLE IF NOT EXISTS bookings (id INTEGER PRIMARY KEY, vehicle_id INTEGER 
 CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, booking_id INTEGER REFERENCES bookings(id) ON DELETE SET NULL, vehicle_id INTEGER NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE, sender_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, body TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, read_at TEXT);
 CREATE TABLE IF NOT EXISTS availability (id INTEGER PRIMARY KEY, vehicle_id INTEGER NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE, date TEXT NOT NULL, available INTEGER NOT NULL DEFAULT 1, UNIQUE(vehicle_id,date));
 `);
+migrate(db);
