@@ -52,4 +52,4 @@ io.on('connection',socket=>{socket.join(`user:${socket.user.id}`);socket.on('cha
 installFeatures(app,{db,auth,role,io,upload});
 db.prepare("SELECT id FROM users WHERE role='owner'").all().forEach(({id})=>refreshTrust(db,id));
 app.get('*',(req,res)=>res.sendFile(path.join(root,'..','public','index.html')));
-const port=Number(process.env.PORT)||3000;server.listen(port,'127.0.0.1',()=>console.log(`RentRide ready at http://localhost:${port}`));
+const PORT=process.env.PORT||3000;server.listen(PORT,'0.0.0.0',()=>console.log('RentRide running on port '+PORT));
